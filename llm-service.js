@@ -6,20 +6,53 @@ class LLMService {
         this.apiUrl = "https://api.openai.com/v1/chat/completions";
         this.useCache = true;
         this.cache = new Map();
-        this.isInitialized = true; // Всегда true, так как используем API
+        this.isInitialized = true;
+        this.useLocalFallback = true; // Использовать локальные ответы если API не работает
     }
 
     async initialize() {
-        console.log("✅ LLM Service ready (using OpenAI API)");
-        return true;
+        console.log("🤖 Инициализация LLM Service...");
+        
+        // Проверяем доступность API
+        try {
+            // Простая проверка сети
+            if (!navigator.onLine) {
+                console.warn("⚠️ Нет подключения к интернету, используем локальные ответы");
+                this.isInitialized = false;
+                return false;
+            }
+            
+            // Проверяем API ключ (базовая валидация)
+            if (!this.apiKey || this.apiKey.includes('your-actual')) {
+                console.warn("⚠️ API ключ не настроен, используем локальные ответы");
+                this.isInitialized = false;
+                return false;
+            }
+            
+            console.log("✅ LLM Service готов (используем OpenAI API)");
+            return true;
+            
+        } catch (error) {
+            console.error("❌ Ошибка инициализации LLM:", error);
+            this.isInitialized = false;
+            return false;
+        }
     }
 
     async generateComment(promptType, context) {
         try {
+            // Проверяем кэш
             const cacheKey = `${promptType}_${JSON.stringify(context).substring(0, 100)}`;
             
             if (this.useCache && this.cache.has(cacheKey)) {
+                console.log("💾 Используем кэшированный ответ");
                 return this.cache.get(cacheKey);
+            }
+            
+            // Если API не инициализирован, используем локальные ответы
+            if (!this.isInitialized) {
+                console.log("⚠️ API не доступен, используем локальный ответ");
+                return this.generateLocalComment(promptType, context);
             }
             
             const prompt = this.buildPrompt(promptType, context);
@@ -50,7 +83,9 @@ class LLMService {
             });
             
             if (!response.ok) {
-                throw new Error(`OpenAI API Error: ${response.status}`);
+                const errorText = await response.text();
+                console.error(`❌ OpenAI API Error ${response.status}:`, errorText);
+                throw new Error(`API Error: ${response.status}`);
             }
             
             const data = await response.json();
@@ -64,8 +99,14 @@ class LLMService {
             return comment;
             
         } catch (error) {
-            console.error("Ошибка OpenAI API:", error);
-            return this.generateFallbackComment(promptType, context);
+            console.error("❌ Ошибка OpenAI API:", error);
+            
+            // Используем локальную генерацию как fallback
+            if (this.useLocalFallback) {
+                return this.generateLocalComment(promptType, context);
+            }
+            
+            throw error;
         }
     }
 
@@ -90,7 +131,7 @@ class LLMService {
 
     buildFilteredPrompt(context) {
         const { query, recommendations, filters } = context;
-        const topWine = recommendations[0];
+        const topWine = recommendations[0] || {};
         
         return `Ты опытный сомелье. Объясни почему эти вина подходят под запрос пользователя.
 
@@ -102,12 +143,11 @@ class LLMService {
 - Макс цена: $${filters.max_price || 'не ограничена'}
 
 Топ рекомендация:
-- Название: ${topWine.title || 'Не указано'}
+- Название: ${topWine.title || topWine.name || 'Не указано'}
 - Сорт: ${topWine.variety || 'Не указан'}
 - Страна: ${topWine.country || 'Не указана'}
 - Цена: $${topWine.price || 'Не указана'}
-- Рейтинг: ${topWine.points || 'Не указан'}/100
-- Схожесть с запросом: ${(topWine.similarity_score * 100).toFixed(1)}%
+- Рейтинг: ${topWine.points || topWine.rating || 'Не указан'}/100
 
 Описание: ${topWine.description || 'Описание отсутствует'}
 
@@ -116,7 +156,7 @@ class LLMService {
 
     buildTastePrompt(context) {
         const { recommendations, preference_analysis, selected_wines } = context;
-        const topWine = recommendations[0];
+        const topWine = recommendations[0] || {};
         const selectedNames = selected_wines.map(w => w.title || w.name).join(', ');
         
         return `Ты AI-сомелье. Проанализируй предпочтения пользователя и объясни почему эти рекомендации подходят.
@@ -130,27 +170,26 @@ class LLMService {
 - Средний рейтинг: ${preference_analysis.average_rating?.toFixed(1) || 'N/A'}/100
 
 Лучшая рекомендация:
-- Название: ${topWine.title}
+- Название: ${topWine.title || topWine.name}
 - Сорт: ${topWine.variety}
 - Страна: ${topWine.country}
 - Цена: $${topWine.price}
-- Схожесть с предпочтениями: ${(topWine.similarity_score * 100).toFixed(1)}%
 
 Дай персональную рекомендацию на русском языке (2-3 предложения). Объясни, почему именно это вино идеально соответствует вкусам пользователя. Будь дружелюбным и используй эмоджи.`;
     }
 
     buildSimplePrompt(context) {
         const { query, recommendations } = context;
-        const topWine = recommendations[0];
+        const topWine = recommendations[0] || {};
         
         return `Ты помощник по выбору вина. Пользователь ищет: "${query}"
 
 Найденные варианты (топ-1):
-- Название: ${topWine.title}
+- Название: ${topWine.title || topWine.name}
 - Сорт: ${topWine.variety}
 - Страна: ${topWine.country}
 - Цена: $${topWine.price}
-- Рейтинг: ${topWine.points || 'N/A'}/100
+- Рейтинг: ${topWine.points || topWine.rating || 'N/A'}/100
 
 Описание: ${topWine.description || 'Описание отсутствует'}
 
@@ -227,51 +266,66 @@ class LLMService {
         return typePrompts[promptType] || basePrompt;
     }
 
-    generateFallbackComment(promptType, context) {
-        console.log("⚠️ Используем fallback комментарий");
+    generateLocalComment(promptType, context) {
+        console.log("⚠️ Используем локальный комментарий");
         
-        const fallbacks = {
+        const localGenerators = {
             'filtered': () => {
                 const { query, recommendations } = context;
-                const topWine = recommendations[0];
-                return `🍷 Отличный выбор! Вино "${topWine.title}" идеально подходит под ваш запрос "${query}". Это ${topWine.variety} из ${topWine.country} обладает насыщенным вкусом и хорошо сочетается с красным мясом. Рекомендую! ✨`;
+                const topWine = recommendations[0] || {};
+                return `🍷 Отличный выбор! Вино "${topWine.title || topWine.name}" идеально подходит под ваш запрос "${query}". Это ${topWine.variety || 'вино'} из ${topWine.country || 'известного региона'} обладает насыщенным вкусом и хорошо сочетается с красным мясом. Рекомендую! ✨`;
             },
             'taste': () => {
                 const { recommendations, preference_analysis } = context;
-                const topWine = recommendations[0];
-                return `🎯 На основе ваших предпочтений я нашел идеальное соответствие! "${topWine.title}" — это ${topWine.variety}, который идеально подходит под ваши вкусы. Вино обладает прекрасным балансом и долгим послевкусием. 🍇`;
+                const topWine = recommendations[0] || {};
+                const favorite = preference_analysis.favorite_varieties?.[0]?.variety || 'подобным сортам';
+                return `🎯 На основе ваших предпочтений я нашел идеальное соответствие! "${topWine.title || topWine.name}" — это ${topWine.variety || 'вино'}, который идеально подходит под ваш вкус к ${favorite}. Вино обладает прекрасным балансом и долгим послевкусием. 🍇`;
             },
             'simple': () => {
                 const { query, recommendations } = context;
-                const topWine = recommendations[0];
-                return `✨ Для "${query}" рекомендую "${topWine.title}"! Это прекрасное ${topWine.variety} за $${topWine.price} порадует вас сбалансированным вкусом и ароматом. Идеальный выбор! 🥂`;
+                const topWine = recommendations[0] || {};
+                return `✨ Для "${query}" рекомендую "${topWine.title || topWine.name}"! Это прекрасное ${topWine.variety || 'вино'} за $${topWine.price || 'разумную цену'} порадует вас сбалансированным вкусом и ароматом. Идеальный выбор! 🥂`;
             },
             'wine_details': () => {
                 const { wine } = context;
-                return `📊 **Экспертная характеристика:**\n\n🍇 ${wine.variety || 'Вино'} из ${wine.country || 'известного региона'}\n💰 Ценовой сегмент: ${wine.price < 30 ? 'бюджетный' : wine.price < 100 ? 'средний' : 'премиум'}\n🎯 Особенности: ${wine.body || 'среднее'} тело, ${wine.aroma || 'приятный аромат'}\n✨ Идеально для: особых случаев и ужинов`;
+                const priceCategory = wine.price < 30 ? 'бюджетный' : wine.price < 100 ? 'средний' : 'премиум';
+                return `📊 **Экспертная характеристика:**\n\n🍇 ${wine.variety || 'Вино'} из ${wine.country || 'известного региона'}\n💰 Ценовой сегмент: ${priceCategory}\n🎯 Особенности: ${wine.body || 'среднее'} тело, ${wine.aroma || 'приятный аромат'}\n✨ Идеально для: особых случаев и ужинов\n\nЭто вино обладает хорошим потенциалом и отлично подойдет как для начинающих, так и для опытных ценителей.`;
             },
             'pairing': () => {
                 const { wine } = context;
-                const pairings = wine.variety?.toLowerCase().includes('red') 
-                    ? ["🥩 Стейк рибай", "🧀 Выдержанный пармезан", "🍝 Паста болоньезе", "🍄 Грибы на гриле"]
-                    : ["🦐 Морепродукты", "🍗 Куриное филе", "🥗 Легкие салаты", "🧀 Козий сыр"];
-                return `🍽️ **Идеальные сочетания:**\n\n${pairings.slice(0, 3).join('\n')}\n\n🌡️ Температура подачи: ${wine.variety?.toLowerCase().includes('red') ? '16-18°C' : '8-12°C'}`;
+                const isRed = wine.variety?.toLowerCase().includes('red') || 
+                             wine.variety?.toLowerCase().includes('cabernet') ||
+                             wine.variety?.toLowerCase().includes('merlot') ||
+                             wine.variety?.toLowerCase().includes('pinot noir');
+                
+                const pairings = isRed 
+                    ? ["🥩 Стейк рибай с розмарином", "🧀 Выдержанный пармезан", "🍝 Паста болоньезе", "🍄 Грибы на гриле"]
+                    : ["🦐 Морепродукты с лимоном", "🍗 Куриное филе в сливочном соусе", "🥗 Свежие салаты", "🧀 Козий сыр с медом"];
+                
+                const temp = isRed ? '16-18°C' : '8-12°C';
+                
+                return `🍽️ **Идеальные сочетания:**\n\n${pairings.slice(0, 3).join('\n')}\n\n🌡️ Температура подачи: ${temp}\n⏱️ Подавайте через 15-30 минут после открытия`;
             },
             'occasion': () => {
                 const { wine } = context;
-                return `🎉 **Идеально для:**\n\n1. Романтического ужина 💕\n2. Праздничного застолья 🎊\n3. Деловой встречи 🤝\n4. Домашнего отдыха 🏠\n\n✨ Это вино украсит любой момент!`;
+                const isExpensive = wine.price > 100;
+                const occasions = isExpensive 
+                    ? ["🎉 Праздничный ужин", "💕 Романтический вечер", "🤝 Деловая встреча", "🎂 Особое событие"]
+                    : ["🏠 Домашний ужин", "👨‍👩‍👧‍👦 Семейный обед", "🎬 Киновечер", "🌇 Встреча заката"];
+                
+                return `🎉 **Идеально для:**\n\n${occasions.map((occ, i) => `${i+1}. ${occ}`).join('\n')}\n\n✨ Это вино украсит любой момент и создаст нужное настроение!`;
             }
         };
         
-        const fallback = fallbacks[promptType] || fallbacks.simple;
-        return fallback();
+        const generator = localGenerators[promptType] || localGenerators.simple;
+        return generator();
+    }
+
+    // Алиас для обратной совместимости
+    generateFallbackComment(promptType, context) {
+        return this.generateLocalComment(promptType, context);
     }
 }
 
 // Создаем глобальный экземпляр
 window.llmService = new LLMService();
-
-// Автоматически инициализируем при загрузке
-document.addEventListener('DOMContentLoaded', () => {
-    window.llmService.initialize().catch(console.error);
-});
