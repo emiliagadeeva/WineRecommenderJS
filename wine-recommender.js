@@ -4,27 +4,45 @@ class WineRecommender {
         this.wines = wineData;
         this.embeddings = embeddings;
         this.useEmbeddings = embeddings !== null;
-        this.initFilters();
         
-        if (this.useEmbeddings) {
-            console.log(`✅ Загружено ${embeddings.length} эмбеддингов`);
-        } else {
-            console.log("⚠️ Работаем в текстовом режиме (эмбеддинги не загружены)");
-        }
+        console.log(`📊 Инициализация WineRecommender: ${wineData.length} вин, эмбеддинги: ${embeddings ? 'да' : 'нет'}`);
+        this.initFilters();
     }
 
     initFilters() {
-        this.countries = [...new Set(this.wines.map(wine => wine.country).filter(Boolean))].sort();
-        this.varieties = [...new Set(this.wines.map(wine => wine.variety).filter(Boolean))].sort();
+        // Получаем уникальные страны
+        const countriesSet = new Set();
+        this.wines.forEach(wine => {
+            if (wine.country && wine.country.trim() && wine.country !== 'Unknown') {
+                countriesSet.add(wine.country.trim());
+            }
+        });
+        this.countries = Array.from(countriesSet).sort();
         
+        // Получаем уникальные сорта
+        const varietiesSet = new Set();
+        this.wines.forEach(wine => {
+            if (wine.variety && wine.variety.trim() && wine.variety !== 'Unknown') {
+                varietiesSet.add(wine.variety.trim());
+            }
+        });
+        this.varieties = Array.from(varietiesSet).sort();
+        
+        // Получаем диапазон цен
         const prices = this.wines.map(wine => wine.price).filter(p => p > 0);
         this.priceRange = {
-            min: prices.length > 0 ? Math.min(...prices) : 0,
-            max: prices.length > 0 ? Math.max(...prices) : 100
+            min: prices.length > 0 ? Math.min(...prices) : 10,
+            max: prices.length > 0 ? Math.max(...prices) : 500
         };
+        
+        console.log(`🌍 Стран: ${this.countries.length}`);
+        console.log(`🍇 Сортов: ${this.varieties.length}`);
+        console.log(`💰 Цены: $${this.priceRange.min} - $${this.priceRange.max}`);
     }
 
     async searchByQuery(query, filters = {}, limit = 20) {
+        console.log(`🔍 Поиск: "${query}", фильтры:`, filters);
+        
         if (this.useEmbeddings && this.embeddings) {
             return this.semanticSearch(query, filters, limit);
         } else {
@@ -34,13 +52,11 @@ class WineRecommender {
 
     semanticSearch(query, filters, limit) {
         try {
-            // Упрощенный семантический поиск (без модели в браузере)
-            // Используем предзагруженные эмбеддинги с упрощенным сравнением
-            
+            // Упрощенный семантический поиск для демо
             const searchTerms = query.toLowerCase().split(' ');
             const results = [];
             
-            for (let i = 0; i < Math.min(this.wines.length, 500); i++) {
+            for (let i = 0; i < Math.min(this.wines.length, 200); i++) {
                 const wine = this.wines[i];
                 
                 // Применяем фильтры
@@ -48,17 +64,15 @@ class WineRecommender {
                 if (filters.country && wine.country !== filters.country) continue;
                 if (filters.max_price && wine.price > filters.max_price) continue;
                 
-                // Считаем текстовое сходство (так как эмбеддинги запроса нет)
+                // Считаем сходство
                 const similarity = this.calculateTextSimilarity(wine, searchTerms);
                 
-                if (similarity > 0.1) { // Минимальный порог
+                if (similarity > 0.1) {
                     results.push({
                         ...wine,
                         similarity_score: similarity
                     });
                 }
-                
-                if (results.length >= limit * 2) break;
             }
             
             // Сортируем по схожести
@@ -90,7 +104,7 @@ class WineRecommender {
         searchTerms.forEach(term => {
             if (term.length > 2 && wineText.includes(term)) {
                 matches++;
-                // Бонус за точное совпадение в названии
+                // Бонус за точное совпадение
                 if (wine.title && wine.title.toLowerCase().includes(term)) {
                     score += 0.3;
                 } else if (wine.variety && wine.variety.toLowerCase().includes(term)) {
@@ -101,12 +115,12 @@ class WineRecommender {
             }
         });
         
-        // Нормализуем скор
+        // Нормализуем
         if (searchTerms.length > 0) {
             score = Math.min(score, 1.0);
         }
         
-        return score;
+        return score || 0.5; // Минимальный скор 0.5
     }
 
     textSearch(query, filters, limit) {
@@ -114,6 +128,7 @@ class WineRecommender {
         
         const results = this.wines
             .filter(wine => {
+                // Применяем фильтры
                 if (filters.variety && wine.variety !== filters.variety) return false;
                 if (filters.country && wine.country !== filters.country) return false;
                 if (filters.max_price && wine.price > filters.max_price) return false;
@@ -139,6 +154,7 @@ class WineRecommender {
             .sort((a, b) => b.similarity_score - a.similarity_score)
             .slice(0, limit);
         
+        console.log(`📊 Найдено ${results.length} результатов`);
         return results;
     }
 
@@ -165,7 +181,7 @@ class WineRecommender {
                 if (term.length > 2 && wineText.includes(term)) {
                     keywordMatches++;
                     // Бонус за важные термины
-                    if (['красное', 'красное', 'red', 'белое', 'white', 'розовое', 'rose'].includes(term)) {
+                    if (['красное', 'красное', 'red', 'белое', 'white', 'розовое', 'rose', 'вино', 'wine'].includes(term)) {
                         score += 0.15;
                     } else if (term.length > 4) {
                         score += 0.1;
@@ -267,7 +283,7 @@ class WineRecommender {
                 // Проверяем все любимые сорта
                 analysis.favorite_varieties.forEach((fav, index) => {
                     if (wine.variety === fav.variety) {
-                        score += 0.2 * (1 - index * 0.1); // Уменьшаем вес для менее популярных
+                        score += 0.2 * (1 - index * 0.1);
                     }
                 });
             }
@@ -300,7 +316,7 @@ class WineRecommender {
     getAllWines() {
         return this.wines.map(wine => ({
             id: wine.id,
-            name: wine.title || 'Без названия',
+            name: wine.title || wine.name || 'Без названия',
             variety: wine.variety || 'Не указан',
             country: wine.country || 'Не указана',
             price: wine.price || 0,
