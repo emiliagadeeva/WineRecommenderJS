@@ -32,6 +32,7 @@
         .hint-bubble { position: absolute; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 10px; width: 300px; z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.1); font-size: 0.9em; }
         .llm-loading { background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%); background-size: 200% 100%; animation: loading 1.5s infinite; border-radius: 4px; }
         @keyframes loading { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .data-loading { background: #f8f9fa; padding: 15px; border-radius: 8px; text-align: center; }
     </style>
 </head>
 <body>
@@ -79,6 +80,7 @@
                                     <span class="input-group-text"><i class="bi bi-graph-up"></i></span>
                                     <select class="form-select" id="varietyFilter">
                                         <option value="">Все сорта</option>
+                                        <option value="loading" disabled>Загрузка...</option>
                                     </select>
                                 </div>
                                 <div class="form-text">Основной сорт винограда или смесь</div>
@@ -90,6 +92,7 @@
                                     <span class="input-group-text"><i class="bi bi-globe"></i></span>
                                     <select class="form-select" id="countryFilter">
                                         <option value="">Все страны</option>
+                                        <option value="loading" disabled>Загрузка...</option>
                                     </select>
                                 </div>
                             </div>
@@ -110,6 +113,13 @@
                                 <button class="btn btn-outline-secondary" onclick="resetFilters()">
                                     <i class="bi bi-arrow-clockwise"></i> Сбросить фильтры
                                 </button>
+                            </div>
+                            
+                            <div class="mt-3">
+                                <button class="btn btn-sm btn-outline-info w-100" onclick="refreshData()">
+                                    <i class="bi bi-arrow-clockwise"></i> Обновить данные
+                                </button>
+                                <small class="text-muted d-block mt-1">Если фильтры не загрузились</small>
                             </div>
                         </div>
                     </div>
@@ -157,6 +167,13 @@
                                         Выберите тип вина, страну происхождения и максимальную цену,<br>
                                         чтобы найти идеальное вино для любого случая.
                                     </p>
+                                    <div class="data-loading mt-4">
+                                        <div class="spinner-border text-primary mb-3"></div>
+                                        <p>Загрузка данных о винах...</p>
+                                        <button class="btn btn-sm btn-outline-primary mt-2" onclick="refreshData()">
+                                            <i class="bi bi-arrow-clockwise"></i> Обновить
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -442,70 +459,241 @@
         let simpleResults = { current: [], page: 1 };
         const resultsPerPage = 6;
 
-        document.addEventListener('DOMContentLoaded', function() {
-            initializeCountryFilter();
-            initializeVarietyFilter();
-            initializeWineSelectList();
+        // Основная инициализация
+        document.addEventListener('DOMContentLoaded', async function() {
+            console.log("🚀 Инициализация приложения Wine Explorer...");
+            
+            // Инициализируем LLM сервис
+            window.llmService.initialize();
+            
+            // Инициализируем фильтры
+            await initializeCountryFilter();
+            await initializeVarietyFilter();
+            await initializePriceFilter();
+            
+            // Инициализируем список вин
+            await initializeWineSelectList();
+            
+            // Загружаем сохраненные выборы
             loadSavedSelections();
             
+            // Слушатель для слайдера цены
             document.getElementById('maxPriceFilter').addEventListener('input', function() {
                 document.getElementById('priceValue').textContent = `$${this.value}`;
             });
             
-            // Инициализируем LLM сервис
-            window.llmService.initialize();
+            console.log("✅ Приложение инициализировано");
         });
 
+        // Инициализация фильтра стран
         async function initializeCountryFilter() {
             try {
-                await window.wineAPI.loadData();
-                const countries = window.wineAPI.recommender.countries || [];
+                console.log("🌍 Загрузка списка стран...");
+                const countries = await API.filters.countries();
                 const filter = document.getElementById('countryFilter');
                 
-                countries.forEach(country => {
-                    if (country && country !== 'Unknown') {
-                        const option = document.createElement('option');
-                        option.value = country;
-                        option.textContent = country;
-                        filter.appendChild(option);
-                    }
-                });
+                // Очищаем существующие опции кроме первой
+                filter.innerHTML = '<option value="">Все страны</option>';
+                
+                if (countries && countries.length > 0) {
+                    countries.forEach(country => {
+                        if (country && country !== 'Unknown' && country !== '' && country !== 'null') {
+                            const option = document.createElement('option');
+                            option.value = country;
+                            option.textContent = country;
+                            filter.appendChild(option);
+                        }
+                    });
+                    
+                    console.log(`✅ Загружено ${countries.length} стран`);
+                } else {
+                    console.warn("⚠️ Список стран пуст, загружаем тестовые");
+                    loadTestCountries();
+                }
+                
             } catch (error) {
-                console.error('Error loading countries:', error);
+                console.error('❌ Ошибка загрузки стран:', error);
+                loadTestCountries();
             }
         }
 
+        // Инициализация фильтра сортов
         async function initializeVarietyFilter() {
             try {
-                await window.wineAPI.loadData();
-                const varieties = window.wineAPI.recommender.varieties || [];
+                console.log("🍇 Загрузка списка сортов...");
+                const varieties = await API.filters.varieties();
                 const filter = document.getElementById('varietyFilter');
                 
-                varieties.forEach(variety => {
-                    if (variety && variety !== 'Unknown') {
-                        const option = document.createElement('option');
-                        option.value = variety;
-                        option.textContent = variety;
-                        filter.appendChild(option);
-                    }
-                });
+                // Очищаем существующие опции
+                filter.innerHTML = '<option value="">Все сорта</option>';
+                
+                if (varieties && varieties.length > 0) {
+                    varieties.forEach(variety => {
+                        if (variety && variety !== 'Unknown' && variety !== '' && variety !== 'null') {
+                            const option = document.createElement('option');
+                            option.value = variety;
+                            option.textContent = variety;
+                            filter.appendChild(option);
+                        }
+                    });
+                    
+                    console.log(`✅ Загружено ${varieties.length} сортов`);
+                } else {
+                    console.warn("⚠️ Список сортов пуст, загружаем тестовые");
+                    loadTestVarieties();
+                }
+                
             } catch (error) {
-                console.error('Error loading varieties:', error);
+                console.error('❌ Ошибка загрузки сортов:', error);
+                loadTestVarieties();
             }
         }
 
+        // Инициализация ценового фильтра
+        async function initializePriceFilter() {
+            try {
+                console.log("💰 Загрузка ценового диапазона...");
+                const priceRange = await API.filters.priceRange();
+                const slider = document.getElementById('maxPriceFilter');
+                const valueSpan = document.getElementById('priceValue');
+                
+                // Устанавливаем диапазон
+                slider.min = Math.max(10, Math.floor(priceRange.min));
+                slider.max = Math.min(500, Math.ceil(priceRange.max));
+                slider.value = Math.min(100, Math.ceil(priceRange.max / 2));
+                valueSpan.textContent = `$${slider.value}`;
+                
+                // Обновляем подписи
+                const labels = document.querySelectorAll('#maxPriceFilter + .d-flex small');
+                if (labels[0]) labels[0].textContent = `$${slider.min}`;
+                if (labels[1]) labels[1].textContent = `$${slider.max}+`;
+                
+                console.log(`✅ Ценовой диапазон: $${slider.min} - $${slider.max}`);
+                
+            } catch (error) {
+                console.error('❌ Ошибка загрузки ценового диапазона:', error);
+                // Оставляем значения по умолчанию
+            }
+        }
+
+        // Тестовые страны
+        function loadTestCountries() {
+            const filter = document.getElementById('countryFilter');
+            const testCountries = [
+                'France', 'Italy', 'Spain', 'USA', 'Chile', 'Argentina', 
+                'Australia', 'Germany', 'Portugal', 'South Africa', 
+                'New Zealand', 'Austria', 'Hungary', 'Greece'
+            ];
+            
+            testCountries.forEach(country => {
+                const option = document.createElement('option');
+                option.value = country;
+                option.textContent = country;
+                filter.appendChild(option);
+            });
+            
+            console.log(`⚠️ Загружено ${testCountries.length} тестовых стран`);
+        }
+
+        // Тестовые сорта
+        function loadTestVarieties() {
+            const filter = document.getElementById('varietyFilter');
+            const testVarieties = [
+                'Cabernet Sauvignon', 'Merlot', 'Pinot Noir', 'Syrah', 
+                'Chardonnay', 'Sauvignon Blanc', 'Riesling', 'Malbec', 
+                'Tempranillo', 'Sangiovese', 'Zinfandel', 'Pinot Grigio',
+                'Grenache', 'Cabernet Franc', 'Carmenere'
+            ];
+            
+            testVarieties.forEach(variety => {
+                const option = document.createElement('option');
+                option.value = variety;
+                option.textContent = variety;
+                filter.appendChild(option);
+            });
+            
+            console.log(`⚠️ Загружено ${testVarieties.length} тестовых сортов`);
+        }
+
+        // Инициализация списка вин для выбора
         async function initializeWineSelectList() {
             try {
+                console.log("📋 Загрузка списка вин для выбора...");
+                
+                const container = document.getElementById('wineSelectList');
+                container.innerHTML = '<div class="text-center p-3"><div class="spinner-border spinner-border-sm text-primary"></div><p class="mt-2">Загрузка списка вин...</p></div>';
+                
                 const data = await API.wines.list();
                 allWines = data;
                 renderWineSelectList();
                 updateSelectedWinesList();
+                
+                console.log(`✅ Загружено ${allWines.length} вин для выбора`);
+                
             } catch (error) {
-                console.error('Error loading wines:', error);
-                showAlert('Не удалось загрузить список вин', 'warning');
+                console.error('❌ Ошибка загрузки списка вин:', error);
+                showAlert('Не удалось загрузить список вин. Используйте тестовые данные.', 'warning');
+                
+                // Показываем тестовые вина
+                allWines = [
+                    { id: 1, name: "Cabernet Sauvignon Reserve", variety: "Cabernet Sauvignon", country: "France", price: 89.99, rating: 94 },
+                    { id: 2, name: "Chardonnay Barrel Select", variety: "Chardonnay", country: "USA", price: 45.50, rating: 92 },
+                    { id: 3, name: "Pinot Noir Elegance", variety: "Pinot Noir", country: "Italy", price: 68.00, rating: 93 },
+                    { id: 4, name: "Sauvignon Blanc Fresh", variety: "Sauvignon Blanc", country: "New Zealand", price: 32.99, rating: 90 },
+                    { id: 5, name: "Merlot Classic", variety: "Merlot", country: "Chile", price: 28.50, rating: 89 }
+                ];
+                
+                renderWineSelectList();
+                updateSelectedWinesList();
             }
         }
 
+        // Обновление данных
+        async function refreshData() {
+            showAlert('🔄 Обновление данных...', 'info');
+            
+            try {
+                // Очищаем кэш
+                localStorage.removeItem('wineData_v3');
+                
+                // Сбрасываем API
+                window.wineAPI = new WineAPI();
+                window.API = {
+                    filters: {
+                        countries: async () => await window.wineAPI.getCountries(),
+                        varieties: async () => await window.wineAPI.getVarieties(),
+                        priceRange: async () => await window.wineAPI.getPriceRange()
+                    },
+                    recommend: {
+                        filtered: async (data) => await window.wineAPI.getFilteredRecommendations(data.query, data.filters),
+                        taste: async (data) => await window.wineAPI.getTasteRecommendations(data.selected_wines),
+                        simple: async (data) => await window.wineAPI.getSimpleRecommendations(data.query)
+                    },
+                    wines: {
+                        list: async () => await window.wineAPI.getWineList()
+                    },
+                    wine: {
+                        'ai-comment': async (data) => await window.wineAPI.getWineAIComment(data.wine),
+                        pairing: async (wineId) => await window.wineAPI.getWinePairing(wineId),
+                        occasion: async (data) => await window.wineAPI.getWineOccasion(data.wine)
+                    }
+                };
+                
+                // Перезагружаем фильтры
+                await initializeCountryFilter();
+                await initializeVarietyFilter();
+                await initializePriceFilter();
+                await initializeWineSelectList();
+                
+                showAlert('✅ Данные успешно обновлены!', 'success');
+                
+            } catch (error) {
+                console.error('Ошибка обновления данных:', error);
+                showAlert('❌ Ошибка при обновлении данных', 'danger');
+            }
+        }
+
+        // Поиск с фильтрами
         async function getFilteredRecommendations() {
             const query = document.getElementById('searchQuery').value;
             const variety = document.getElementById('varietyFilter').value;
@@ -543,6 +731,7 @@
             }
         }
 
+        // Рекомендации по вкусу
         async function getTasteRecommendations() {
             if (selectedWines.length === 0) {
                 showAlert('Пожалуйста, выберите хотя бы одно вино', 'warning');
@@ -571,6 +760,7 @@
             }
         }
 
+        // Простой поиск
         async function getSimpleRecommendations() {
             const query = document.getElementById('simpleQuery').value;
             
@@ -600,6 +790,7 @@
             }
         }
 
+        // Отображение результатов
         function displayFilterResults() {
             const section = document.getElementById('filterResultsSection');
             const welcome = document.getElementById('filterWelcome');
@@ -608,7 +799,7 @@
             const pagination = document.getElementById('filterPagination');
 
             if (filterResults.current.length === 0) {
-                container.innerHTML = '<div class="col-12"><div class="alert alert-info">Ничего не найдено</div></div>';
+                container.innerHTML = '<div class="col-12"><div class="alert alert-info">Ничего не найдено. Попробуйте изменить параметры поиска.</div></div>';
                 count.textContent = 'Найдено 0 вин';
                 section.style.display = 'block';
                 welcome.style.display = 'none';
@@ -637,7 +828,7 @@
             const container = document.getElementById('tasteResultsContainer');
 
             if (tasteResults.current.length === 0) {
-                container.innerHTML = '<div class="col-12"><div class="alert alert-info">Нет рекомендаций</div></div>';
+                container.innerHTML = '<div class="col-12"><div class="alert alert-info">Нет рекомендаций. Попробуйте выбрать другие вина.</div></div>';
                 count.textContent = 'Персональные рекомендации (0)';
             } else {
                 count.textContent = `Персональные рекомендации (${tasteResults.current.length})`;
@@ -653,7 +844,7 @@
             const container = document.getElementById('simpleResultsContainer');
 
             if (simpleResults.current.length === 0) {
-                container.innerHTML = '<div class="col-12"><div class="alert alert-info">Ничего не найдено</div></div>';
+                container.innerHTML = '<div class="col-12"><div class="alert alert-info">Ничего не найдено. Попробуйте изменить запрос.</div></div>';
             } else {
                 displayResultsPage('simple');
             }
@@ -661,16 +852,28 @@
             section.style.display = 'block';
         }
 
+        // Работа со списком вин
         function renderWineSelectList(filterText = '') {
             const container = document.getElementById('wineSelectList');
-            container.innerHTML = '';
-
+            
+            if (!allWines || allWines.length === 0) {
+                container.innerHTML = '<div class="text-center p-3 text-muted"><i class="bi bi-exclamation-triangle"></i><br>Список вин пуст</div>';
+                return;
+            }
+            
             const filteredWines = allWines.filter(wine => {
                 if (!filterText) return true;
                 const searchStr = `${wine.name} ${wine.variety} ${wine.country}`.toLowerCase();
                 return searchStr.includes(filterText.toLowerCase());
             });
 
+            if (filteredWines.length === 0) {
+                container.innerHTML = '<div class="text-center p-3 text-muted">Ничего не найдено</div>';
+                return;
+            }
+
+            container.innerHTML = '';
+            
             filteredWines.forEach(wine => {
                 const isSelected = selectedWines.some(sw => sw.id === wine.id);
                 const item = document.createElement('div');
@@ -841,6 +1044,7 @@
             container.innerHTML = html || '<div class="col-12"><p class="text-muted">Анализ предпочтений недоступен</p></div>';
         }
 
+        // Вспомогательные функции
         function displayResultsPage(tab) {
             let results, container;
             
@@ -1018,7 +1222,7 @@
 
         function getWineTypeColor(variety) {
             if (!variety) return 'secondary';
-            const redVarieties = ['Red Blend', 'Cabernet', 'Merlot', 'Pinot Noir', 'Syrah', 'Malbec', 'Zinfandel', 'Sangiovese', 'Tempranillo'];
+            const redVarieties = ['Cabernet', 'Merlot', 'Pinot Noir', 'Syrah', 'Malbec', 'Zinfandel', 'Sangiovese', 'Tempranillo', 'Red Blend'];
             const whiteVarieties = ['Chardonnay', 'Sauvignon', 'Riesling', 'Pinot Gris', 'Pinot Grigio'];
             
             if (redVarieties.some(v => variety.includes(v))) return 'danger';
@@ -1072,6 +1276,7 @@
             document.getElementById('simpleQuery').value = query;
         }
 
+        // Детали вина
         function showWineDetails(wine) {
             const modalElement = document.getElementById('wineDetailsModal');
             
@@ -1093,7 +1298,8 @@
             document.getElementById('wineDetailsCharacteristics').textContent = characteristics;
             
             const wineImage = document.getElementById('wineDetailsImage');
-            wineImage.src = `https://source.unsplash.com/300x300/?wine,${(wine.variety || 'wine-bottle').toLowerCase()}`;
+            const searchTerm = encodeURIComponent((wine.variety || 'wine') + ' bottle');
+            wineImage.src = `https://source.unsplash.com/300x300/?${searchTerm}`;
             wineImage.alt = wine.title || wine.name;
             
             // AI комментарии
@@ -1116,8 +1322,7 @@
                 commentElement.innerHTML = '<i class="bi bi-exclamation-triangle text-warning me-2"></i>Не удалось загрузить рекомендацию';
             }
             
-            // Загружаем остальные рекомендации
-            loadWinePairing(wine.id || wine.name);
+            loadWinePairing(wine.id);
             loadWineOccasion(wine);
         }
         
@@ -1276,6 +1481,7 @@
             }
         }
 
+        // Уведомления
         function showAlert(message, type = 'info', duration = 3000) {
             const oldAlerts = document.querySelectorAll('.alert-toast');
             oldAlerts.forEach(alert => {
@@ -1366,6 +1572,15 @@
                     }
                 }
             });
+        }
+
+        // Заглушки для нереализованных функций
+        function shareWine() {
+            showAlert('Функция "Поделиться" в разработке', 'info');
+        }
+
+        function saveWineForLater() {
+            showAlert('Вино сохранено для просмотра позже', 'success');
         }
     </script>
 </body>
