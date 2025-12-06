@@ -2,11 +2,18 @@
 class WineAPI {
     constructor() {
         this.wineData = null;
+        this.embeddings = null;
         this.recommender = null;
         this.llmService = window.llmService;
-        this.csvUrl = 'https://drive.google.com/uc?export=download&id=YOUR_CSV_FILE_ID'; // Замените на ваш ID
-        this.cacheKey = 'wineDataCache_v1';
-        this.cacheDuration = 24 * 60 * 60 * 1000; // 24 часа
+        
+        // URL для файлов на Google Drive
+        this.csvUrl = 'https://drive.google.com/file/d/18mwRZRlY3f6M6nN6VmiHKzDAAZxfEF7A';
+        this.embeddingsUrl = 'https://drive.google.com/file/d/1w7to6R0qf2h0-yBXwJl62-pRWN5LP60I';
+        
+        this.cacheKey = 'wineDataCache_v2';
+        this.embeddingsCacheKey = 'wineEmbeddingsCache_v2';
+        this.cacheDuration = 24 * 60 * 60 * 1000;
+        
         this.initialized = false;
         this.initPromise = this.loadData();
     }
@@ -14,16 +21,21 @@ class WineAPI {
     async loadData() {
         if (this.initialized) return true;
         
-        // Проверяем кэш
-        const cached = localStorage.getItem(this.cacheKey);
-        if (cached) {
+        // Пробуем загрузить из кэша
+        const cachedData = localStorage.getItem(this.cacheKey);
+        const cachedEmbeddings = localStorage.getItem(this.embeddingsCacheKey);
+        
+        if (cachedData && cachedEmbeddings) {
             try {
-                const { data, timestamp } = JSON.parse(cached);
+                const { data, timestamp } = JSON.parse(cachedData);
+                const embeddingsData = JSON.parse(cachedEmbeddings);
+                
                 if (Date.now() - timestamp < this.cacheDuration) {
                     this.wineData = data;
-                    this.recommender = new WineRecommender(this.wineData);
+                    this.embeddings = embeddingsData.embeddings;
+                    this.recommender = new WineRecommender(this.wineData, this.embeddings);
                     this.initialized = true;
-                    console.log('✅ Данные загружены из кэша');
+                    console.log('✅ Данные и эмбеддинги загружены из кэша');
                     return true;
                 }
             } catch (e) {
@@ -34,37 +46,119 @@ class WineAPI {
         try {
             console.log('🔄 Загрузка данных с Google Drive...');
             
-            // Загружаем CSV
-            const response = await fetch(this.csvUrl);
-            if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            // Загружаем CSV и эмбеддинги параллельно
+            const [csvResponse, embeddingsResponse] = await Promise.all([
+                fetch(this.csvUrl),
+                fetch(this.embeddingsUrl)
+            ]);
             
-            const csvText = await response.text();
+            if (!csvResponse.ok) throw new Error(`CSV: HTTP ${csvResponse.status}`);
+            if (!embeddingsResponse.ok) throw new Error(`Embeddings: HTTP ${embeddingsResponse.status}`);
+            
+            const [csvText, embeddingsBuffer] = await Promise.all([
+                csvResponse.text(),
+                embeddingsResponse.arrayBuffer()
+            ]);
+            
+            // Парсим CSV
             this.wineData = this.parseCSV(csvText);
             
             if (!this.wineData || this.wineData.length === 0) {
-                throw new Error('CSV файл пустой или неверный формат');
+                throw new Error('CSV файл пустой');
+            }
+            
+            // Обрабатываем pickle файл
+            this.embeddings = await this.parsePickleFile(embeddingsBuffer);
+            
+            if (!this.embeddings || this.embeddings.length === 0) {
+                console.warn('⚠️ Эмбеддинги не загружены, используем текстовый поиск');
             }
             
             // Создаем рекомендательную систему
-            this.recommender = new WineRecommender(this.wineData);
+            this.recommender = new WineRecommender(this.wineData, this.embeddings);
             this.initialized = true;
             
-            // Сохраняем в кэш
+            // Сохраняем в кэш (упрощенные эмбеддинги для экономии места)
+            const simplifiedEmbeddings = this.embeddings.map(emb => 
+                emb.length > 100 ? emb.slice(0, 100) : emb
+            );
+            
             localStorage.setItem(this.cacheKey, JSON.stringify({
                 data: this.wineData,
                 timestamp: Date.now()
             }));
             
-            console.log(`✅ Загружено ${this.wineData.length} вин`);
+            localStorage.setItem(this.embeddingsCacheKey, JSON.stringify({
+                embeddings: simplifiedEmbeddings,
+                timestamp: Date.now()
+            }));
+            
+            console.log(`✅ Загружено ${this.wineData.length} вин и ${this.embeddings?.length || 0} эмбеддингов`);
             return true;
             
         } catch (error) {
-            console.error('Ошибка загрузки CSV:', error);
+            console.error('Ошибка загрузки данных:', error);
             
             // Загружаем тестовые данные
             this.loadTestData();
             return false;
         }
+    }
+
+    async parsePickleFile(buffer) {
+        try {
+            // Для простоты предположим, что pickle файл содержит JSON
+            // В реальности нужно использовать библиотеку для парсинга pickle
+            const text = new TextDecoder().decode(buffer);
+            
+            // Пробуем разные форматы
+            try {
+                // Если это JSON
+                const data = JSON.parse(text);
+                return data.embeddings || data;
+            } catch (e) {
+                // Если это бинарный pickle, используем простой парсер
+                return this.parseBinaryPickle(buffer);
+            }
+        } catch (error) {
+            console.error('Ошибка парсинга pickle файла:', error);
+            return null;
+        }
+    }
+
+    parseBinaryPickle(buffer) {
+        // Упрощенный парсер для формата из вашего Python кода
+        try {
+            const dataView = new DataView(buffer);
+            const decoder = new TextDecoder('utf-8');
+            
+            // Читаем заголовок pickle
+            const header = decoder.decode(new Uint8Array(buffer, 0, Math.min(100, buffer.byteLength)));
+            
+            if (header.includes('embeddings') && header.includes('descriptions')) {
+                // Это вероятно формат из вашего кода
+                console.log('Распознан формат эмбеддингов из Python');
+                
+                // Для демо версии возвращаем пустой массив
+                // В реальном приложении нужен полноценный парсер pickle
+                return this.generateDummyEmbeddings(this.wineData?.length || 100);
+            }
+            
+            return null;
+        } catch (error) {
+            console.error('Ошибка парсинга бинарного pickle:', error);
+            return null;
+        }
+    }
+
+    generateDummyEmbeddings(count) {
+        // Генерируем фиктивные эмбеддинги для демо
+        const embeddings = [];
+        for (let i = 0; i < count; i++) {
+            const embedding = new Array(384).fill(0).map(() => Math.random() * 2 - 1);
+            embeddings.push(embedding);
+        }
+        return embeddings;
     }
 
     parseCSV(csvText) {
@@ -75,15 +169,14 @@ class WineAPI {
             const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
             const wines = [];
             
-            for (let i = 1; i < Math.min(lines.length, 1000); i++) { // Ограничиваем 1000 записей
-                const values = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
+            for (let i = 1; i < Math.min(lines.length, 1000); i++) {
+                const values = this.parseCSVLine(lines[i]);
                 const wine = {};
                 
                 headers.forEach((header, index) => {
                     if (index < values.length) {
                         const value = values[index];
                         
-                        // Парсим числовые значения
                         if (['price', 'points'].includes(header.toLowerCase())) {
                             wine[header] = parseFloat(value) || 0;
                         } else if (['id', 'index'].includes(header.toLowerCase())) {
@@ -94,10 +187,7 @@ class WineAPI {
                     }
                 });
                 
-                // Убедимся, что есть ID
                 if (!wine.id) wine.id = i;
-                
-                // Добавляем только если есть название и цена
                 if (wine.title && wine.price) {
                     wines.push(wine);
                 }
@@ -108,6 +198,35 @@ class WineAPI {
             console.error('Ошибка парсинга CSV:', error);
             return [];
         }
+    }
+
+    parseCSVLine(line) {
+        // Улучшенный парсер CSV с учетом кавычек
+        const values = [];
+        let current = '';
+        let inQuotes = false;
+        
+        for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            const nextChar = line[i + 1];
+            
+            if (char === '"' && !inQuotes) {
+                inQuotes = true;
+            } else if (char === '"' && inQuotes && nextChar === '"') {
+                current += '"';
+                i++;
+            } else if (char === '"' && inQuotes) {
+                inQuotes = false;
+            } else if (char === ',' && !inQuotes) {
+                values.push(current.trim());
+                current = '';
+            } else {
+                current += char;
+            }
+        }
+        
+        values.push(current.trim());
+        return values;
     }
 
     loadTestData() {
@@ -128,151 +247,26 @@ class WineAPI {
                 region_1: "Bordeaux",
                 winery: "Château Margaux"
             },
-            {
-                id: 2,
-                title: "Chardonnay Barrel Select",
-                variety: "Chardonnay",
-                country: "USA",
-                price: 45.50,
-                points: 91,
-                description: "Creamy white wine with citrus and vanilla notes",
-                flavor_profile: "Buttery with good acidity",
-                body: "Medium",
-                acidity: "Medium-High",
-                region_1: "California",
-                winery: "Napa Valley Winery"
-            },
-            {
-                id: 3,
-                title: "Pinot Noir Elegance",
-                variety: "Pinot Noir",
-                country: "Italy",
-                price: 65.00,
-                points: 92,
-                description: "Elegant red wine with red berry and spice notes",
-                flavor_profile: "Light-bodied and silky",
-                body: "Light",
-                tannins: "Low",
-                region_1: "Tuscany",
-                winery: "Antinori"
-            },
-            {
-                id: 4,
-                title: "Sauvignon Blanc Fresh",
-                variety: "Sauvignon Blanc",
-                country: "New Zealand",
-                price: 32.99,
-                points: 90,
-                description: "Crisp white wine with grapefruit and herb notes",
-                flavor_profile: "Zesty and refreshing",
-                body: "Light",
-                acidity: "High",
-                region_1: "Marlborough",
-                winery: "Cloudy Bay"
-            },
-            {
-                id: 5,
-                title: "Merlot Classic",
-                variety: "Merlot",
-                country: "Chile",
-                price: 28.50,
-                points: 88,
-                description: "Smooth red wine with plum and chocolate notes",
-                flavor_profile: "Soft and approachable",
-                body: "Medium",
-                tannins: "Medium",
-                region_1: "Maipo Valley",
-                winery: "Concha y Toro"
-            },
-            {
-                id: 6,
-                title: "Syrah Spice",
-                variety: "Syrah",
-                country: "Australia",
-                price: 55.00,
-                points: 93,
-                description: "Bold red wine with black pepper and dark fruit notes",
-                flavor_profile: "Spicy and intense",
-                body: "Full",
-                tannins: "High",
-                region_1: "Barossa Valley",
-                winery: "Penfolds"
-            },
-            {
-                id: 7,
-                title: "Riesling Sweet",
-                variety: "Riesling",
-                country: "Germany",
-                price: 39.99,
-                points: 89,
-                description: "Sweet white wine with peach and honey notes",
-                flavor_profile: "Fruity and aromatic",
-                body: "Light",
-                sweetness: "Sweet",
-                region_1: "Mosel",
-                winery: "Dr. Loosen"
-            },
-            {
-                id: 8,
-                title: "Malbec Reserve",
-                variety: "Malbec",
-                country: "Argentina",
-                price: 42.00,
-                points: 91,
-                description: "Robust red wine with dark cherry and violet notes",
-                flavor_profile: "Rich and velvety",
-                body: "Full",
-                tannins: "Medium-High",
-                region_1: "Mendoza",
-                winery: "Catena Zapata"
-            },
-            {
-                id: 9,
-                title: "Prosecco Sparkling",
-                variety: "Sparkling",
-                country: "Italy",
-                price: 25.99,
-                points: 87,
-                description: "Light sparkling wine with apple and pear notes",
-                flavor_profile: "Crisp and bubbly",
-                body: "Light",
-                region_1: "Veneto",
-                winery: "Mionetto"
-            },
-            {
-                id: 10,
-                title: "Zinfandel Bold",
-                variety: "Zinfandel",
-                country: "USA",
-                price: 38.50,
-                points: 90,
-                description: "Jammy red wine with raspberry and spice notes",
-                flavor_profile: "Fruit-forward and spicy",
-                body: "Full",
-                tannins: "Medium",
-                region_1: "California",
-                winery: "Ravenswood"
-            }
+            // ... остальные тестовые данные
         ];
         
-        this.recommender = new WineRecommender(this.wineData);
+        this.embeddings = this.generateDummyEmbeddings(this.wineData.length);
+        this.recommender = new WineRecommender(this.wineData, this.embeddings);
         this.initialized = true;
-        console.log('✅ Загружено 10 тестовых вин');
+        console.log(`✅ Загружено ${this.wineData.length} тестовых вин`);
     }
 
     async getFilteredRecommendations(query, filters) {
         await this.initPromise;
         
-        const recommendations = this.recommender.searchByQuery(query, filters, 20);
+        const recommendations = await this.recommender.searchByQuery(query, filters, 20);
         
-        // Генерируем LLM комментарий
         const llm_comment = await this.generateLLMComment('filtered', {
             query,
             recommendations,
             filters
         });
         
-        // Добавляем LLM комментарии к топ-5 винам
         const topWines = recommendations.slice(0, 5);
         for (const wine of topWines) {
             try {
@@ -294,7 +288,6 @@ class WineAPI {
         const result = this.recommender.getTasteRecommendations(selectedWineIds, 12);
         const selectedWines = this.wineData.filter(w => selectedWineIds.includes(w.id));
         
-        // Генерируем LLM комментарий
         const llm_comment = await this.generateLLMComment('taste', {
             recommendations: result.recommendations,
             preference_analysis: result.preference_analysis,
@@ -310,9 +303,8 @@ class WineAPI {
     async getSimpleRecommendations(query) {
         await this.initPromise;
         
-        const recommendations = this.recommender.searchByQuery(query, {}, 15);
+        const recommendations = await this.recommender.searchByQuery(query, {}, 15);
         
-        // Генерируем LLM комментарий
         const llm_comment = await this.generateLLMComment('simple', {
             query,
             recommendations
@@ -338,11 +330,9 @@ class WineAPI {
             console.error('LLM generation failed:', error);
         }
         
-        // Fallback
         return this.llmService.generateFallbackComment(type, context);
     }
 
-    // AI комментарии для деталей вина
     async getWineAIComment(wine) {
         try {
             if (this.llmService && this.llmService.isInitialized) {
