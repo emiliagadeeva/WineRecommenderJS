@@ -7,8 +7,8 @@ class WineAPI {
         this.llmService = window.llmService;
         
         // URL для файлов
-        this.csvUrl = 'https://drive.google.com/file/d/18mwRZRlY3f6M6nN6VmiHKzDAAZxfEF7A/';
-        this.embeddingsUrl = 'https://drive.google.com/file/d/1KMy_lZIziIsGI3SE2EInydfZJ6rPWlIE';
+        this.csvUrl = 'https://drive.google.com/uc?export=download&id=18mwRZRlY3f6M6nN6VmiHKzDAAZxfEF7A';
+        this.embeddingsUrl = 'https://drive.google.com/uc?export=download&id=1KMy_lZIziIsGI3SE2EInydfZJ6rPWlIE';
         
         this.cacheKey = 'wineData_v3';
         this.cacheDuration = 24 * 60 * 60 * 1000;
