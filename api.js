@@ -1,5 +1,4 @@
-      
- // api.js
+// api.js
 class WineAPI {
     constructor() {
         this.wineData = null;
@@ -7,11 +6,11 @@ class WineAPI {
         this.recommender = null;
         this.llmService = window.llmService;
         
-        // URL для файлов на Google Drive - ЗАМЕНИТЕ НА СВОИ!
-        this.csvUrl = 'https://drive.google.com/uc?export=download&id=18mwRZRlY3f6M6nN6VmiHKzDAAZxfEF7A';
-        this.embeddingsUrl = 'https://drive.google.com/uc?export=download&id=1KMy_lZIziIsGI3SE2EInydfZJ6rPWlIE';
+        // URL для файлов - замените на свои!
+        this.csvUrl = 'https://drive.google.com/file/d/18mwRZRlY3f6M6nN6VmiHKzDAAZxfEF7A'; // Замените на URL вашего CSV файла
+        this.embeddingsUrl = 'https://drive.google.com/file/d/1KMy_lZIziIsGI3SE2EInydfZJ6rPWlIE'; // Замените на URL вашего JSON файла с эмбеддингами
         
-        this.cacheKey = 'wineData_v3';
+        this.cacheKey = 'wineData_v4';
         this.cacheDuration = 24 * 60 * 60 * 1000; // 24 часа
         
         this.initialized = false;
@@ -21,6 +20,26 @@ class WineAPI {
         this.countries = null;
         this.varieties = null;
         this.priceRange = null;
+        
+        // Загружаем SentenceTransformer для вычисления эмбеддингов запросов
+        this.loadSentenceTransformer();
+    }
+
+    async loadSentenceTransformer() {
+        try {
+            // Загружаем библиотеку для вычисления эмбеддингов
+            if (typeof window !== 'undefined') {
+                // Используем CDN для загрузки SentenceTransformer
+                if (!window.sentenceTransformers) {
+                    console.log('Загрузка SentenceTransformer...');
+                    // Здесь можно добавить загрузку библиотеки, если используется в браузере
+                    // В продакшене нужно использовать совместимую библиотеку для браузера
+                    // или серверное API для вычисления эмбеддингов
+                }
+            }
+        } catch (error) {
+            console.warn('Не удалось загрузить SentenceTransformer:', error);
+        }
     }
 
     async init() {
@@ -43,10 +62,13 @@ class WineAPI {
                         this.priceRange = priceRange;
                         
                         this.recommender = new WineRecommender(this.wineData, this.embeddings);
+                        await this.recommender.initializeModel();
                         this.initialized = true;
                         
                         console.log('✅ Данные загружены из кэша');
-                        console.log(`📊 ${this.wineData.length} вин, ${this.countries.length} стран, ${this.varieties.length} сортов`);
+                        console.log(`📊 ${this.wineData.length} вин`);
+                        console.log(`🌍 ${this.countries.length} стран`);
+                        console.log(`🍇 ${this.varieties.length} сортов`);
                         return true;
                     }
                 } catch (e) {
@@ -55,15 +77,25 @@ class WineAPI {
             }
 
             try {
-                console.log('📥 Загрузка данных с Google Drive...');
+                console.log('📥 Загрузка данных...');
                 
                 // Загружаем CSV
                 const wines = await this.loadCSVData();
+                if (!wines || wines.length === 0) {
+                    throw new Error('CSV файл пуст или не загружен');
+                }
+                
                 this.wineData = wines;
                 
-                // Загружаем эмбеддинги (если есть)
+                // Загружаем эмбеддинги
                 try {
                     this.embeddings = await this.loadEmbeddingsData();
+                    if (this.embeddings && Object.keys(this.embeddings).length > 0) {
+                        console.log(`✅ Загружено ${Object.keys(this.embeddings).length} эмбеддингов`);
+                    } else {
+                        console.warn('⚠️ Эмбеддинги не загружены или файл пуст');
+                        this.embeddings = null;
+                    }
                 } catch (embeddingError) {
                     console.warn('⚠️ Эмбеддинги не загружены:', embeddingError.message);
                     this.embeddings = null;
@@ -71,6 +103,7 @@ class WineAPI {
                 
                 // Создаем рекомендательную систему
                 this.recommender = new WineRecommender(this.wineData, this.embeddings);
+                await this.recommender.initializeModel();
                 
                 // Инициализируем фильтры
                 this.countries = this.recommender.countries;
@@ -89,7 +122,7 @@ class WineAPI {
                     timestamp: Date.now()
                 }));
                 
-                console.log(`✅ Загружено ${this.wineData.length} вин`);
+                console.log(`✅ Загружено ${this.wineData.length} вин из CSV`);
                 console.log(`🌍 Стран: ${this.countries.length}`);
                 console.log(`🍇 Сортов: ${this.varieties.length}`);
                 console.log(`💰 Диапазон цен: $${this.priceRange.min} - $${this.priceRange.max}`);
@@ -98,8 +131,7 @@ class WineAPI {
                 
             } catch (error) {
                 console.error('❌ Ошибка загрузки данных:', error);
-                this.loadTestData();
-                return false;
+                throw new Error(`Не удалось загрузить данные: ${error.message}`);
             }
         })();
         
@@ -109,13 +141,23 @@ class WineAPI {
     async loadCSVData() {
         try {
             console.log('📥 Загрузка CSV...');
+            
+            if (!this.csvUrl || this.csvUrl.includes('YOUR_CSV_FILE_URL')) {
+                throw new Error('URL CSV файла не указан. Пожалуйста, укажите корректный URL.');
+            }
+            
             const response = await fetch(this.csvUrl);
             
             if (!response.ok) {
-                throw new Error(`CSV: ${response.status} ${response.statusText}`);
+                throw new Error(`Ошибка загрузки CSV: ${response.status} ${response.statusText}`);
             }
             
             const csvText = await response.text();
+            
+            if (!csvText || csvText.trim().length === 0) {
+                throw new Error('CSV файл пуст');
+            }
+            
             return this.parseCSV(csvText);
             
         } catch (error) {
@@ -128,30 +170,25 @@ class WineAPI {
         try {
             console.log('📥 Загрузка эмбеддингов...');
             
-            // Если URL не указан, пропускаем
-            if (!this.embeddingsUrl || this.embeddingsUrl.includes('YOUR_EMBEDDINGS')) {
-                console.log('⚠️ URL эмбеддингов не указан, пропускаем');
+            if (!this.embeddingsUrl || this.embeddingsUrl.includes('YOUR_EMBEDDINGS_FILE_URL')) {
+                console.log('⚠️ URL эмбеддингов не указан, используем текстовый поиск');
                 return null;
             }
             
             const response = await fetch(this.embeddingsUrl);
             
             if (!response.ok) {
-                throw new Error(`Embeddings: ${response.status}`);
+                throw new Error(`Ошибка загрузки эмбеддингов: ${response.status}`);
             }
             
-            const jsonData = await response.json();
+            const data = await response.json();
             
-            // Поддерживаем разные форматы JSON
-            if (Array.isArray(jsonData)) {
-                return jsonData; // Простой массив эмбеддингов
-            } else if (jsonData.embeddings) {
-                return jsonData.embeddings; // Объект с полем embeddings
-            } else if (jsonData.data) {
-                return jsonData.data; // Объект с полем data
+            // Ожидаем объект вида { wine_id: [embeddings], ... }
+            if (typeof data === 'object' && !Array.isArray(data)) {
+                return data;
             }
             
-            console.warn('⚠️ Неизвестный формат эмбеддингов');
+            console.warn('⚠️ Неизвестный формат эмбеддингов, используем текстовый поиск');
             return null;
             
         } catch (error) {
@@ -164,17 +201,65 @@ class WineAPI {
         try {
             const lines = csvText.split('\n').filter(line => line.trim());
             if (lines.length < 2) {
-                console.warn('CSV файл пустой или содержит только заголовок');
-                return [];
+                throw new Error('CSV файл пустой или содержит только заголовок');
             }
             
             const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
             const wines = [];
             
             console.log(`📊 Заголовки CSV: ${headers.join(', ')}`);
+            console.log(`📊 Всего строк: ${lines.length - 1}`);
             
-            for (let i = 1; i < Math.min(lines.length, 1000); i++) { // Ограничиваем 1000 строк для производительности
+            // Определяем индексы важных полей
+            const idIndex = headers.findIndex(h => h.toLowerCase().includes('id'));
+            const titleIndex = headers.findIndex(h => 
+                h.toLowerCase().includes('title') || 
+                h.toLowerCase().includes('name') || 
+                h.toLowerCase().includes('wine')
+            );
+            const varietyIndex = headers.findIndex(h => 
+                h.toLowerCase().includes('variety') || 
+                h.toLowerCase().includes('type') || 
+                h.toLowerCase().includes('grape')
+            );
+            const countryIndex = headers.findIndex(h => 
+                h.toLowerCase().includes('country') || 
+                h.toLowerCase().includes('origin')
+            );
+            const priceIndex = headers.findIndex(h => 
+                h.toLowerCase().includes('price') || 
+                h.toLowerCase().includes('cost')
+            );
+            const pointsIndex = headers.findIndex(h => 
+                h.toLowerCase().includes('points') || 
+                h.toLowerCase().includes('rating') || 
+                h.toLowerCase().includes('score')
+            );
+            const descriptionIndex = headers.findIndex(h => 
+                h.toLowerCase().includes('description') || 
+                h.toLowerCase().includes('note') || 
+                h.toLowerCase().includes('comment')
+            );
+            const regionIndex = headers.findIndex(h => 
+                h.toLowerCase().includes('region') || 
+                h.toLowerCase().includes('province')
+            );
+            const wineryIndex = headers.findIndex(h => 
+                h.toLowerCase().includes('winery') || 
+                h.toLowerCase().includes('producer') || 
+                h.toLowerCase().includes('maker')
+            );
+            
+            let processedCount = 0;
+            let errorCount = 0;
+            
+            for (let i = 1; i < lines.length; i++) {
                 try {
+                    if (i > 5000) { // Ограничиваем для производительности
+                        console.log(`⚠️ Ограничение: обработано 5000 из ${lines.length - 1} строк`);
+                        break;
+                    }
+                    
                     const values = this.parseCSVLine(lines[i]);
                     const wine = {};
                     
@@ -188,9 +273,11 @@ class WineAPI {
                             }
                             
                             // Парсим числовые поля
-                            if (['price', 'points', 'rating', 'score'].includes(header.toLowerCase())) {
+                            if (['price', 'points', 'rating', 'score'].some(term => 
+                                header.toLowerCase().includes(term))) {
                                 wine[header] = parseFloat(value) || 0;
-                            } else if (['id', 'index', 'number'].includes(header.toLowerCase())) {
+                            } else if (['id', 'index', 'number'].some(term => 
+                                header.toLowerCase().includes(term))) {
                                 wine[header] = parseInt(value) || i;
                             } else {
                                 wine[header] = value || '';
@@ -199,34 +286,97 @@ class WineAPI {
                     });
                     
                     // Убедимся в наличии ID
-                    if (!wine.id && !wine.ID) wine.id = i;
-                    if (!wine.id && wine.ID) wine.id = wine.ID;
+                    if (!wine.id && !wine.ID) {
+                        if (idIndex !== -1 && values[idIndex]) {
+                            wine.id = parseInt(values[idIndex]) || i;
+                        } else {
+                            wine.id = i;
+                        }
+                    } else if (!wine.id && wine.ID) {
+                        wine.id = parseInt(wine.ID) || i;
+                    }
+                    
+                    // Извлекаем важные поля по индексам
+                    if (titleIndex !== -1 && values[titleIndex]) {
+                        wine.title = values[titleIndex].replace(/^"(.*)"$/, '$1').trim();
+                    }
+                    
+                    if (varietyIndex !== -1 && values[varietyIndex]) {
+                        wine.variety = values[varietyIndex].replace(/^"(.*)"$/, '$1').trim();
+                    }
+                    
+                    if (countryIndex !== -1 && values[countryIndex]) {
+                        wine.country = values[countryIndex].replace(/^"(.*)"$/, '$1').trim();
+                    }
+                    
+                    if (priceIndex !== -1 && values[priceIndex]) {
+                        wine.price = parseFloat(values[priceIndex]) || 0;
+                    }
+                    
+                    if (pointsIndex !== -1 && values[pointsIndex]) {
+                        wine.points = parseFloat(values[pointsIndex]) || 0;
+                    }
+                    
+                    if (descriptionIndex !== -1 && values[descriptionIndex]) {
+                        wine.description = values[descriptionIndex].replace(/^"(.*)"$/, '$1').trim();
+                    }
+                    
+                    if (regionIndex !== -1 && values[regionIndex]) {
+                        wine.region_1 = values[regionIndex].replace(/^"(.*)"$/, '$1').trim();
+                    }
+                    
+                    if (wineryIndex !== -1 && values[wineryIndex]) {
+                        wine.winery = values[wineryIndex].replace(/^"(.*)"$/, '$1').trim();
+                    }
                     
                     // Убедимся в наличии названия
-                    if (!wine.title && wine.name) wine.title = wine.name;
-                    if (!wine.title && wine.Title) wine.title = wine.Title;
+                    if (!wine.title && wine.name) {
+                        wine.title = wine.name;
+                    }
+                    if (!wine.title && wine.Title) {
+                        wine.title = wine.Title;
+                    }
                     if (!wine.title && wine.description) {
-                        wine.title = wine.description.substring(0, 50) + '...';
+                        wine.title = `Вино ${wine.id}`;
                     }
                     
                     // Убедимся в наличии цены
-                    if (!wine.price || wine.price <= 0) wine.price = 20 + Math.random() * 100;
+                    if (!wine.price || wine.price <= 0) {
+                        wine.price = 20 + Math.random() * 100;
+                    }
                     
                     // Убедимся в наличии рейтинга
-                    if (!wine.points || wine.points <= 0) wine.points = 80 + Math.random() * 20;
+                    if (!wine.points || wine.points <= 0) {
+                        wine.points = 80 + Math.random() * 20;
+                    }
                     
-                    // Добавляем только если есть хотя бы название
-                    if (wine.title && wine.title.trim()) {
+                    // Очищаем значения
+                    if (wine.country) wine.country = wine.country.replace(/[^a-zA-Zа-яА-Я\s-]/g, '').trim();
+                    if (wine.variety) wine.variety = wine.variety.replace(/[^a-zA-Zа-яА-Я\s-]/g, '').trim();
+                    
+                    // Добавляем только если есть основные поля
+                    if (wine.title && wine.title.trim() && 
+                        wine.country && wine.country.trim() &&
+                        wine.variety && wine.variety.trim()) {
                         wines.push(wine);
+                        processedCount++;
+                    } else {
+                        errorCount++;
                     }
                     
                 } catch (lineError) {
+                    errorCount++;
                     console.warn(`Ошибка в строке ${i}:`, lineError);
                     continue;
                 }
             }
             
-            console.log(`✅ Парсинг CSV: ${wines.length} вин из ${lines.length - 1} строк`);
+            console.log(`✅ Парсинг CSV: ${processedCount} успешно, ${errorCount} ошибок`);
+            
+            if (wines.length === 0) {
+                throw new Error('Не удалось распарсить ни одного вина из CSV');
+            }
+            
             return wines;
             
         } catch (error) {
@@ -261,158 +411,6 @@ class WineAPI {
         
         values.push(current);
         return values;
-    }
-
-    loadTestData() {
-        console.log('⚠️ Загружаем тестовые данные');
-        
-        this.wineData = this.generateTestData();
-        this.embeddings = null;
-        this.recommender = new WineRecommender(this.wineData, null);
-        
-        // Инициализируем фильтры
-        this.countries = this.recommender.countries;
-        this.varieties = this.recommender.varieties;
-        this.priceRange = this.recommender.priceRange;
-        
-        this.initialized = true;
-        
-        console.log(`✅ Загружено ${this.wineData.length} тестовых вин`);
-        console.log(`🌍 Стран: ${this.countries.length}`);
-        console.log(`🍇 Сортов: ${this.varieties.length}`);
-        
-        // Сохраняем тестовые данные в кэш
-        localStorage.setItem(this.cacheKey, JSON.stringify({
-            wineData: this.wineData,
-            embeddings: null,
-            countries: this.countries,
-            varieties: this.varieties,
-            priceRange: this.priceRange,
-            timestamp: Date.now()
-        }));
-    }
-
-    generateTestData() {
-        const testWines = [
-            {
-                id: 1,
-                title: "Cabernet Sauvignon Reserve 2018",
-                name: "Cabernet Sauvignon Reserve 2018",
-                variety: "Cabernet Sauvignon",
-                country: "France",
-                region_1: "Bordeaux",
-                winery: "Château Margaux",
-                price: 125.99,
-                points: 96,
-                description: "A rich, full-bodied red wine with notes of black currant, dark cherry, and hints of oak. Excellent aging potential.",
-                flavor_profile: "Bold and structured",
-                body: "Full",
-                tannins: "High",
-                acidity: "Medium",
-                aroma: "Black fruits, tobacco, vanilla",
-                pairing_suggestions: "Steak, lamb, aged cheeses"
-            },
-            {
-                id: 2,
-                title: "Chardonnay Barrel Select 2020",
-                name: "Chardonnay Barrel Select 2020",
-                variety: "Chardonnay",
-                country: "USA",
-                region_1: "California",
-                winery: "Napa Valley Winery",
-                price: 45.50,
-                points: 92,
-                description: "Creamy white wine with citrus notes and a smooth vanilla finish from oak aging.",
-                flavor_profile: "Buttery and rich",
-                body: "Medium",
-                acidity: "Medium-High",
-                aroma: "Citrus, pear, vanilla",
-                pairing_suggestions: "Seafood, chicken, creamy pasta"
-            },
-            {
-                id: 3,
-                title: "Pinot Noir Elegance 2019",
-                name: "Pinot Noir Elegance 2019",
-                variety: "Pinot Noir",
-                country: "Italy",
-                region_1: "Tuscany",
-                winery: "Antinori",
-                price: 68.00,
-                points: 93,
-                description: "Elegant and silky red wine with red berry flavors and subtle spice notes.",
-                flavor_profile: "Delicate and aromatic",
-                body: "Light",
-                tannins: "Low",
-                aroma: "Red berries, rose, spice",
-                pairing_suggestions: "Duck, mushroom dishes, salmon"
-            },
-            {
-                id: 4,
-                title: "Sauvignon Blanc Fresh 2021",
-                name: "Sauvignon Blanc Fresh 2021",
-                variety: "Sauvignon Blanc",
-                country: "New Zealand",
-                region_1: "Marlborough",
-                winery: "Cloudy Bay",
-                price: 32.99,
-                points: 90,
-                description: "Crisp and refreshing white wine with vibrant grapefruit and herbaceous notes.",
-                flavor_profile: "Zesty and crisp",
-                body: "Light",
-                acidity: "High",
-                aroma: "Grapefruit, lime, cut grass",
-                pairing_suggestions: "Goat cheese, salads, seafood"
-            },
-            {
-                id: 5,
-                title: "Merlot Classic 2017",
-                name: "Merlot Classic 2017",
-                variety: "Merlot",
-                country: "Chile",
-                region_1: "Maipo Valley",
-                winery: "Concha y Toro",
-                price: 28.50,
-                points: 89,
-                description: "Smooth and approachable red wine with plum and chocolate notes.",
-                flavor_profile: "Soft and fruity",
-                body: "Medium",
-                tannins: "Medium",
-                aroma: "Plum, black cherry, chocolate",
-                pairing_suggestions: "Pizza, pasta, grilled meats"
-            }
-        ];
-        
-        // Добавим еще 25 случайных вин для разнообразия
-        const varieties = ["Cabernet Sauvignon", "Merlot", "Pinot Noir", "Syrah", "Chardonnay", "Sauvignon Blanc", "Riesling", "Malbec", "Tempranillo", "Sangiovese", "Zinfandel", "Pinot Grigio", "Grenache", "Cabernet Franc", "Carmenere"];
-        const countries = ["France", "Italy", "Spain", "USA", "Chile", "Argentina", "Australia", "Germany", "Portugal", "South Africa", "New Zealand", "Austria", "Hungary", "Greece"];
-        const regions = ["Bordeaux", "Tuscany", "Rioja", "Napa Valley", "Maipo Valley", "Mendoza", "Barossa Valley", "Mosel", "Douro", "Stellenbosch", "Marlborough", "Wachau", "Tokaj", "Peloponnese"];
-        
-        for (let i = 6; i <= 30; i++) {
-            const variety = varieties[Math.floor(Math.random() * varieties.length)];
-            const country = countries[Math.floor(Math.random() * countries.length)];
-            const region = regions[Math.floor(Math.random() * regions.length)];
-            const year = 2020 - Math.floor(Math.random() * 10);
-            
-            testWines.push({
-                id: i,
-                title: `${variety} ${country} ${year}`,
-                name: `${variety} ${country} ${year}`,
-                variety: variety,
-                country: country,
-                region_1: region,
-                winery: `${country} Winery`,
-                price: Math.floor(Math.random() * 100) + 20,
-                points: Math.floor(Math.random() * 15) + 85,
-                description: `A fine example of ${variety} from ${country}. Excellent with food or on its own.`,
-                flavor_profile: ["Fruity", "Elegant", "Bold", "Smooth"][Math.floor(Math.random() * 4)],
-                body: ["Light", "Medium", "Full"][Math.floor(Math.random() * 3)],
-                tannins: ["Low", "Medium", "High"][Math.floor(Math.random() * 3)],
-                aroma: "Fruit and spice notes",
-                pairing_suggestions: "Various dishes"
-            });
-        }
-        
-        return testWines;
     }
 
     // Методы для получения фильтров
