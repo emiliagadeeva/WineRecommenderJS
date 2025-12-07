@@ -452,6 +452,58 @@
     <script src="llm-service.js"></script>
     <script src="api.js"></script>
     <script>
+    // ====== НАЧАЛО: Обход CORS для Google Drive ======
+    // Сохраняем оригинальный fetch
+        window.originalFetch = window.fetch;
+        
+        // Переопределяем fetch для обработки Google Drive URL
+        window.fetch = function(url, options) {
+            // Используем прокси для Google Drive
+            if (typeof url === 'string' && url.includes('drive.google.com')) {
+                console.log('📤 Используем прокси для Google Drive:', url);
+                
+                const proxyUrl = 'https://api.allorigins.win/get?url=' + encodeURIComponent(url);
+                
+                return window.originalFetch(proxyUrl, options)
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`Proxy error: ${response.status}`);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        if (!data || !data.contents) {
+                            throw new Error('No content from proxy');
+                        }
+                        
+                        // Создаем mock Response объект
+                        return {
+                            ok: true,
+                            status: 200,
+                            statusText: 'OK',
+                            headers: {
+                                get: () => 'application/json'
+                            },
+                            text: () => Promise.resolve(data.contents),
+                            json: () => {
+                                try {
+                                    return Promise.resolve(JSON.parse(data.contents));
+                                } catch (e) {
+                                    return Promise.resolve(data.contents);
+                                }
+                            }
+                        };
+                    })
+                    .catch(error => {
+                        console.error('Proxy fetch error:', error);
+                        // Пробуем прямой запрос как fallback
+                        return window.originalFetch(url, options);
+                    });
+            }
+            
+            // Для всех остальных URL используем оригинальный fetch
+            return window.originalFetch(url, options);
+        };
         // Глобальные переменные
         let allWines = [];
         let selectedWines = [];
@@ -1582,6 +1634,26 @@
 
         function saveWineForLater() {
             showAlert('Вино сохранено для просмотра позже', 'success');
+        }
+        async function fetchWithRetry(url, options = {}, retries = 3) {
+            try {
+                const response = await fetch(url, options);
+                
+                if (!response.ok && retries > 0) {
+                    console.log(`Повторная попытка (${4-retries}/3)...`);
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    return fetchWithRetry(url, options, retries - 1);
+                }
+                
+                return response;
+            } catch (error) {
+                if (retries > 0) {
+                    console.log(`Повторная попытка после ошибки (${4-retries}/3)...`);
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    return fetchWithRetry(url, options, retries - 1);
+                }
+                throw error;
+            }
         }
     </script>
 </body>
